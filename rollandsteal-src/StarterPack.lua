@@ -71,6 +71,22 @@ function M.Init()
 	local price = def.Price
 	local image = def.Image
 
+	-- ===== 24 h timer: the offer is only there for 24 hours after the player's first join =====
+	-- (data.StarterPackStart is set by the server on the first join; GetServerTimeNow = the same clock for everyone)
+	local function timeLeft()
+		local d = State.Data
+		if not d or not d.StarterPackStart then return nil end
+		return d.StarterPackStart + (def.Duration or 86400) - workspace:GetServerTimeNow()
+	end
+	local function available()
+		local left = timeLeft()
+		return not owned() and left ~= nil and left > 0
+	end
+	local function clock(s)
+		s = math.max(0, math.floor(s))
+		return string.format("%02d:%02d:%02d", s // 3600, (s % 3600) // 60, s % 60)
+	end
+
 	-- ===================== the offer window =====================
 	local W, H = 860, 560
 	local win = new("Frame", {Name = "StarterPack", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H),
@@ -85,8 +101,15 @@ function M.Init()
 	grad(header, HC1, HC2)
 	new("Frame", {Name = "Fill", Position = UDim2.new(0, 0, 1, -26), Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = HC2, BorderSizePixel = 0, ZIndex = 1}, header)
 	new("Frame", {Name = "Line", Position = UDim2.new(0, 0, 1, 0), Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = DARK, BorderSizePixel = 0, ZIndex = 3}, header)
-	label(header, {Name = "Title", Text = "🎁 STARTER PACK", Position = UDim2.fromOffset(22, 11), Size = UDim2.fromOffset(380, 48),
+	label(header, {Name = "Title", Text = "🎁 STARTER PACK", Position = UDim2.fromOffset(22, 11), Size = UDim2.fromOffset(330, 48),
 		TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4, Stroke = 4})
+	-- red countdown pill (the offer only lasts 24 h after your first join)
+	local timerChip = new("Frame", {Name = "Timer", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -306, 0.5, 0), Size = UDim2.fromOffset(196, 38),
+		BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 4}, header)
+	corner(timerChip, UDim.new(1, 0))
+	stroke(timerChip, 3, DARK)
+	grad(timerChip, C(255, 110, 110), C(210, 40, 55))
+	local timerL = label(timerChip, {Text = "⏳ ENDS IN --:--:--", Size = UDim2.new(1, -16, 0.66, 0), Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 5, Stroke = 2.5})
 	-- "ONE-TIME OFFER" ribbon
 	local ribbon = new("Frame", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -84, 0.5, 0), Size = UDim2.fromOffset(210, 38), BackgroundColor3 = WHITE,
 		BorderSizePixel = 0, ZIndex = 4}, header)
@@ -174,6 +197,8 @@ function M.Init()
 	end
 	UI.Button(buy, function()
 		if owned() then UI.Toast("✅ You already have the Starter Pack!", "Info") return end
+		local left = timeLeft()
+		if left and left <= 0 then UI.Toast("⏳ The Starter Pack offer has ended!", "Error") return end
 		MarketplaceService:PromptProductPurchase(me, def.Id)
 	end)
 
@@ -233,10 +258,39 @@ function M.Init()
 
 	local function applyOwned()
 		local have = owned()
-		if tile then tile.Visible = not have end
+		local show = available()
+		if tile then tile.Visible = show end
+		-- the Shop also sells it: hide that card once you own it / the 24 h are over
+		local shop = UI.Windows:FindFirstChild("Shop")
+		local card = shop and shop:FindFirstChild(KEY, true)
+		if card and card:GetAttribute("Kind") == "Product" then card.Visible = show end
+		if not have and not show and timeLeft() and UI.IsOpen("StarterPack") then UI.Close("StarterPack") end
 		refresh()
-		return have
+		return not show
 	end
+
+	-- countdown on the tile + in the window header (every second)
+	task.spawn(function()
+		local wasShown = nil
+		while true do
+			local left = timeLeft()
+			local txt = left and clock(left) or "--:--:--"
+			if tile then
+				local s = tile:FindFirstChild("Sub", true)
+				if s then
+					s.Text = "⏳ " .. txt
+					s.TextColor3 = (left and left < 3600) and C(255, 150, 150) or C(255, 255, 255)
+				end
+			end
+			timerL.Text = "⏳ ENDS IN " .. txt
+			local shown = available()
+			if shown ~= wasShown then
+				wasShown = shown
+				applyOwned()
+			end
+			task.wait(1)
+		end
+	end)
 
 	-- window animation
 	RunService.RenderStepped:Connect(function(dt)
@@ -266,10 +320,6 @@ function M.Init()
 				image = "rbxassetid://" .. info.IconImageAssetId
 				pic.Image = image
 			end
-			if tile then
-				local s = tile:FindFirstChild("Sub", true)
-				if s then s.Text = "R$ " .. tostring(price) end
-			end
 			refresh()
 		end
 	end)
@@ -290,7 +340,7 @@ function M.Init()
 		if applyOwned() then return end
 		task.wait(25)
 		for _ = 1, 60 do
-			if owned() then return end
+			if not available() then return end
 			local cut = UI.Overlay and UI.Overlay:FindFirstChild("Cutscene")
 			if not UI.Current and not (cut and cut.Visible) then
 				UI.Open("StarterPack")
